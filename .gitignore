@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment variables
+.env
+
+# Checkpoints and cache (runtime artifacts, not source)
+checkpoints/
+.cache/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Outputs (generated during training)
+# outputs/ is tracked but generated content may be gitignored selectively
+
+# WandB local
+wandb/
+
+# Dataset cache
+data/

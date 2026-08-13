@@ -1,0 +1,10 @@
+torch>=2.0.0
+numpy
+tokenizers>=0.15.0
+wandb
+huggingface_hub
+python-Levenshtein
+sacrebleu
+rouge-score
+matplotlib
+python-dotenv
