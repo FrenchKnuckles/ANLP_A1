@@ -483,6 +483,7 @@ def plot_c5_vs_c1(
     axes[1].set_title("Training Speed")
     axes[1].set_xticks(x2)
     axes[1].set_xticklabels(speed_labels, fontsize=8)
+    axes[1].set_yscale("log")
     axes[1].legend()
     axes[1].grid(True, alpha=0.3, axis="y")
 

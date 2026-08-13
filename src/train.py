@@ -296,19 +296,8 @@ def train_one_epoch(
         torch.cuda.reset_peak_memory_stats()
 
     for batch_idx, (src, tgt) in enumerate(train_loader):
-        # Length curriculum: scale up sequence length over first 5 epochs
-        # epoch 1 = 20% of seq, epoch 2 = 40%, ..., epoch >= 5 = 100%
-        curriculum_ratio = min(1.0, epoch / 5.0)
-        tgt_len = int(tgt.size(1) * curriculum_ratio)
-        tgt_len = max(2, tgt_len) # At least length 2 for teacher forcing
-        
-        if is_blt:
-            src_len = tgt_len * blt_patch_size
-        else:
-            src_len = tgt_len
-            
-        src = src[:, :src_len].to(device)
-        tgt = tgt[:, :tgt_len].to(device)
+        src = src.to(device)
+        tgt = tgt.to(device)
 
         # Teacher forcing: input is tgt[:-1], labels are tgt[1:]
         tgt_input = tgt[:, :-1]

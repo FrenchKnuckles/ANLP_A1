@@ -1,13 +1,13 @@
 {
-  "bit_accuracy": 0.6616731743301293,
+  "bit_accuracy": 0.6620360296650891,
   "sequence_accuracy": 0.0,
-  "levenshtein_raw": 95.68363939899832,
-  "levenshtein_normalized": 0.722613480544456,
-  "bleu": 1.1716999731012807,
-  "rouge1": 0.1859765121340926,
-  "rouge2": 0.0319272331775757,
-  "rougeL": 0.17045486754746503,
-  "best_val_loss": 5.7728389862453025,
+  "levenshtein_raw": 102.22245409015025,
+  "levenshtein_normalized": 0.7300855512497226,
+  "bleu": 1.1258606950712318,
+  "rouge1": 0.18000949781154107,
+  "rouge2": 0.03127464165314087,
+  "rougeL": 0.16565254905142612,
+  "best_val_loss": 5.738673986492009,
   "best_epoch": 23,
   "num_params": 9470272,
   "baselines": {
@@ -25,9 +25,9 @@
     }
   },
   "speed": {
-    "wall_time_per_epoch": 40.649680614471436,
-    "tokens_per_sec": 13882.519898547493,
-    "bytes_per_sec": 43910.25890039971,
-    "peak_memory_mb": 5603.267578125
+    "wall_time_per_epoch": 40.677093267440796,
+    "tokens_per_sec": 13834.96102585224,
+    "bytes_per_sec": 43792.55883128333,
+    "peak_memory_mb": 5049.3583984375
   }
 }

@@ -193,8 +193,8 @@ def train_bpe_tokenizers(
 ) -> tuple[Tokenizer, Tokenizer]:
     """Train separate BPE tokenizers for source and target."""
     os.makedirs(cache_dir, exist_ok=True)
-    src_path = os.path.join(cache_dir, "bpe_tokenizer_src_v2.json")
-    tgt_path = os.path.join(cache_dir, "bpe_tokenizer_tgt_v2.json")
+    src_path = os.path.join(cache_dir, "bpe_tokenizer_src_v3.json")
+    tgt_path = os.path.join(cache_dir, "bpe_tokenizer_tgt_v3.json")
     
     src_tokenizer = train_single_tokenizer(train_cipher, vocab_size, src_path)
     tgt_tokenizer = train_single_tokenizer(train_plain, vocab_size, tgt_path)

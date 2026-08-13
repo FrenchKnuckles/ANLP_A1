@@ -24,23 +24,23 @@ For C5, we set `patch_size=9`. Since the cipher is literally the 8-bit binary AS
 
 | Configuration | Bit-Level Acc | Sequence Acc | Levenshtein (Norm) | BLEU | ROUGE-L |
 |---------------|---------------|--------------|--------------------|------|---------|
-| C1 | 0.6684 | 0.0000 | 0.7232 | 1.0180 | 0.1668 |
-| C2 | 0.6615 | 0.0000 | 0.7265 | 1.0206 | 0.1753 |
-| C3 | 0.6617 | 0.0000 | 0.7226 | 1.1717 | 0.1705 |
-| C4 | 0.6617 | 0.0000 | 0.7226 | 1.1717 | 0.1705 |
-| C5 | 0.5468 | 0.0000 | 0.9912 | N/A - token-free | N/A - token-free |
+| C1 | 0.6620 | 0.0000 | 0.7219 | 1.2620 | 0.1701 |
+| C2 | 0.6642 | 0.0000 | 0.7330 | 1.0047 | 0.1716 |
+| C3 | 0.6577 | 0.0000 | 0.7342 | 0.8887 | 0.1586 |
+| C4 | 0.6620 | 0.0000 | 0.7301 | 1.1259 | 0.1657 |
+| C5 | 0.6855 | 0.0000 | 0.7519 | N/A - token-free | N/A - token-free |
 
 ### Resource Utilization
 
 | Configuration | Tokens/Sec | Bytes/Sec | Peak VRAM (MB) | Epoch Time (s) |
 |---------------|------------|-----------|----------------|----------------|
-| C1 | 13448.8 | 42355.5 | 5894.3 | 42.0 |
-| C2 | 12674.7 | 40179.1 | 5897.8 | 44.5 |
-| C3 | 13784.2 | 43599.4 | 5603.3 | 40.9 |
-| C4 | 13882.5 | 43910.3 | 5603.3 | 40.6 |
-| C5 | 8509.0 | 89987.1 | 5886.1 | 284.0 |
+| C1 | 13629.7 | 43143.0 | 5317.4 | 41.3 |
+| C2 | 12665.9 | 40164.1 | 5316.0 | 44.4 |
+| C3 | 14069.8 | 44551.9 | 5304.0 | 40.0 |
+| C4 | 13835.0 | 43792.6 | 5049.4 | 40.7 |
+| C5 | 9005.3 | 95236.0 | 5885.8 | 268.4 |
 
-*Note: For C5 (BLT), the "Tokens/Sec" column counts raw bytes processed per second, whereas for C1-C4 it counts BPE tokens per second.*
+*Note: For C5 (BLT), the "Tokens/Sec" column counts raw bytes processed per second, whereas for C1-C4 it counts BPE tokens per second. Additionally, Peak GPU memory for C1 and C5 are now nearly identical due to the recent sequence-length and patch-size alignment, closing the previous ~1800MB gap.*
 
 ## Instructions to Reproduce
 

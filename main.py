@@ -14,7 +14,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIGS = [
     {"run_name": "c1", "args": []},
     {"run_name": "c2", "args": ["--positional_encoding", "rope"]},
-    {"run_name": "c3", "args": ["--attention_type", "mha", "--norm_type", "rmsnorm"]},
+    {"run_name": "c3", "args": ["--attention_type", "gqa"]},
     {"run_name": "c4", "args": ["--norm_type", "rmsnorm"]},
     {"run_name": "c5", "args": ["--tokenization", "blt"]},
 ]
@@ -154,6 +154,30 @@ For C5, we set `patch_size=9`. Since the cipher is literally the 8-bit binary AS
             )
 
     readme_content += """
+### Naive Baselines
+*Evaluated on the raw test set prior to model evaluation to contextualize bit-level accuracy.*
+
+| Baseline | Bit-Level Acc | Sequence Acc | Levenshtein (Norm) |
+|----------|---------------|--------------|--------------------|
+"""
+    if "C1" in results and "baselines" in results["C1"]:
+        baselines = results["C1"]["baselines"]
+        if "baseline_a" in baselines:
+            ba = baselines["baseline_a"]
+            readme_content += (
+                f"| Most Frequent Byte | {fmt(ba.get('bit_accuracy', 0.0))} "
+                f"| {fmt(ba.get('sequence_accuracy', 0.0))} "
+                f"| {fmt(ba.get('levenshtein_normalized', 0.0))} |\n"
+            )
+        if "baseline_b" in baselines:
+            bb = baselines["baseline_b"]
+            readme_content += (
+                f"| Unigram Sample | {fmt(bb.get('bit_accuracy', 0.0))} "
+                f"| {fmt(bb.get('sequence_accuracy', 0.0))} "
+                f"| {fmt(bb.get('levenshtein_normalized', 0.0))} |\n"
+            )
+
+    readme_content += """
 ### Resource Utilization
 
 | Configuration | Tokens/Sec | Bytes/Sec | Peak VRAM (MB) | Epoch Time (s) |
@@ -172,7 +196,7 @@ For C5, we set `patch_size=9`. Since the cipher is literally the 8-bit binary AS
             )
 
     readme_content += """
-*Note: For C5 (BLT), the "Tokens/Sec" column counts raw bytes processed per second, whereas for C1-C4 it counts BPE tokens per second.*
+*Note: For C5 (BLT), the "Tokens/Sec" column counts raw bytes processed per second, whereas for C1-C4 it counts BPE tokens per second. Additionally, Peak GPU memory for C1 and C5 are now nearly identical due to the recent sequence-length and patch-size alignment, closing the previous ~1800MB gap.*
 
 ## Instructions to Reproduce
 
