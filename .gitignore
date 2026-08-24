@@ -34,3 +34,5 @@ wandb/
 data/
 
 code.diff
+scratch/
+tests/
