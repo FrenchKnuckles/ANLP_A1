@@ -32,3 +32,5 @@ wandb/
 
 # Dataset cache
 data/
+
+code.diff
