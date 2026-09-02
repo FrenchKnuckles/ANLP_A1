@@ -63,8 +63,9 @@ def build_model(config, data_info, device):
             dropout=config['dropout'],
             max_seq_len=config['max_seq_len'],
             patch_size=config['blt_patch_size'],
-            d_local=config['d_model'],
-            local_heads=config['num_heads']
+            d_local=config['d_local'],
+            local_heads=config['num_heads'],
+            num_local_layers=config['num_local_layers']
         )
     else:
         model = Seq2SeqTransformer(
@@ -430,13 +431,15 @@ def get_default_config():
         'seed': 42,
         'epochs': 50,
         'patience': 5,
-        'bpe_vocab_size': 8000,
+        'bpe_vocab_size': 1000,
         'positional_encoding': 'sinusoidal',
         'attention_type': 'mha',
         'norm_type': 'layernorm',
         'tokenization': 'subword',
         'gqa_kv_heads': 2,
         'blt_patch_size': 9,
+        'd_local': 128,
+        'num_local_layers': 2,
         'run_name': 'c1'
     }
 
@@ -529,6 +532,34 @@ For C5, we set `patch_size=9`. Since the cipher is literally the 8-bit binary AS
     print("README.md generated successfully.")
 
 
+def generate_final_reports():
+    print("\nGenerating final comparison plots and README...")
+    output_dir = os.path.join(PROJECT_ROOT, 'outputs')
+    
+    results = {}
+    all_losses = {}
+    
+    for run_name in ['c1', 'c2', 'c3', 'c4', 'c5']:
+        metrics_file = os.path.join(output_dir, f"metrics_{run_name}.json")
+        if os.path.exists(metrics_file):
+            with open(metrics_file, 'r') as f:
+                results[run_name.upper()] = json.load(f)
+                
+        losses_file = os.path.join(output_dir, f"losses_{run_name}.json")
+        if os.path.exists(losses_file):
+            with open(losses_file, 'r') as f:
+                all_losses[run_name.upper()] = json.load(f)
+                
+    if all_losses:
+        plot_loss_curves(all_losses, output_dir)
+        
+    if results:
+        plot_metrics_comparison(results, output_dir)
+        if 'C1' in results and 'C5' in results:
+            plot_c5_vs_c1(results['C1'], results['C5'], results['C1'].get('speed', {}), results['C5'].get('speed', {}), output_dir)
+        generate_readme(results)
+
+
 def run_all_configs():
     print("=" * 60)
     print("Starting Cipher Transformer Ablation Study")
@@ -558,22 +589,7 @@ def run_all_configs():
         except Exception as e:
             print(f"Error: {run_name.upper()} failed with error: {e}. Continuing with remaining configs.")
 
-    print("\nGenerating final comparison plots...")
-    all_losses = {}
-    for run_name, _ in configs_to_run:
-        losses_file = os.path.join(output_dir, f"losses_{run_name}.json")
-        if os.path.exists(losses_file):
-            with open(losses_file, 'r') as f:
-                all_losses[run_name.upper()] = json.load(f)
-    
-    if all_losses:
-        plot_loss_curves(all_losses, output_dir)
-    
-    if results:
-        plot_metrics_comparison(results, output_dir)
-        if 'C1' in results and 'C5' in results:
-            plot_c5_vs_c1(results['C1'], results['C5'], results['C1'].get('speed', {}), results['C5'].get('speed', {}), output_dir)
-        generate_readme(results)
+    generate_final_reports()
 
 
 if __name__ == '__main__':
@@ -598,6 +614,7 @@ if __name__ == '__main__':
             config['tokenization'] = 'blt'
             
         run_training(config)
+        generate_final_reports()
     else:
         print(f"Unknown command: {command}")
         print("Available commands: c1, c2, c3, c4, c5, all")

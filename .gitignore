@@ -31,8 +31,7 @@ Thumbs.db
 wandb/
 
 # Dataset cache
-data/
-
-code.diff
 scratch/
 tests/
+data/
+*.diff

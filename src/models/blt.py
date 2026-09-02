@@ -14,7 +14,7 @@ BYTE_VOCAB_SIZE = 259
 
 class LocalEncoder(nn.Module):
 
-    def __init__(self, d_model=256, patch_size=4, d_local=128, num_heads=4, dropout=0.1):
+    def __init__(self, d_model=256, patch_size=4, d_local=128, num_heads=4, num_layers=4, dropout=0.1):
         super().__init__()
         self.patch_size = patch_size
         self.d_model = d_model
@@ -23,13 +23,13 @@ class LocalEncoder(nn.Module):
         self.byte_embedding = nn.Embedding(BYTE_VOCAB_SIZE, d_local, padding_idx=BYTE_PAD)
         self.byte_pos_enc = SinusoidalPositionalEncoding(d_local, max_len=patch_size, dropout=dropout)
 
-        self.self_attn1 = MultiHeadAttention(d_local, num_heads, dropout)
-        self.self_attn_norm1 = LayerNorm(d_local)
-        self.self_attn_dropout1 = nn.Dropout(dropout)
-
-        self.self_attn2 = MultiHeadAttention(d_local, num_heads, dropout)
-        self.self_attn_norm2 = LayerNorm(d_local)
-        self.self_attn_dropout2 = nn.Dropout(dropout)
+        self.layers = nn.ModuleList([
+            nn.ModuleDict({
+                'attn': MultiHeadAttention(d_local, num_heads, dropout),
+                'norm': LayerNorm(d_local),
+                'dropout': nn.Dropout(dropout)
+            }) for _ in range(num_layers)
+        ])
 
         self.pool_query = nn.Parameter(torch.randn(1, 1, d_local))
         self.pool_attn = MultiHeadAttention(d_local, num_heads, dropout)
@@ -64,12 +64,10 @@ class LocalEncoder(nn.Module):
         x = self.byte_embedding(patches_flat)
         x = self.byte_pos_enc(x)
 
-        # two layers of pre-norm self attention within each patch
-        x_norm = self.self_attn_norm1(x)
-        x = x + self.self_attn_dropout1(self.self_attn1(x_norm, x_norm, x_norm, mask=attn_mask))
-
-        x_norm = self.self_attn_norm2(x)
-        x = x + self.self_attn_dropout2(self.self_attn2(x_norm, x_norm, x_norm, mask=attn_mask))
+        # multi-layer pre-norm self attention within each patch
+        for layer in self.layers:
+            x_norm = layer['norm'](x)
+            x = x + layer['dropout'](layer['attn'](x_norm, x_norm, x_norm, mask=attn_mask))
 
         # cross-attention pooling: learnable query compresses each patch to one vector
         query = self.pool_query.expand(batch_size * num_patches, -1, -1)
@@ -92,13 +90,14 @@ class LocalEncoder(nn.Module):
 class BLTSeq2SeqModel(nn.Module):
 
     def __init__(self, d_model=256, num_heads=8, num_encoder_layers=4, num_decoder_layers=4,
-                 d_ff=1024, dropout=0.1, max_seq_len=512, patch_size=4, d_local=128, local_heads=4):
+                 d_ff=1024, dropout=0.1, max_seq_len=512, patch_size=4, d_local=128, local_heads=4,
+                 num_local_layers=4):
         super().__init__()
         self.d_model = d_model
         self.src_patch_size = patch_size
         self.max_seq_len = max_seq_len
 
-        self.local_encoder = LocalEncoder(d_model, self.src_patch_size, d_local, local_heads, dropout)
+        self.local_encoder = LocalEncoder(d_model, self.src_patch_size, d_local, local_heads, num_local_layers, dropout)
         self.tgt_embedding = nn.Embedding(BYTE_VOCAB_SIZE, d_model, padding_idx=BYTE_PAD)
 
         self.patch_pos_enc = SinusoidalPositionalEncoding(d_model, max_len=max_seq_len, dropout=dropout)
