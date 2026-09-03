@@ -35,3 +35,4 @@ scratch/
 tests/
 data/
 *.diff
+*.tex

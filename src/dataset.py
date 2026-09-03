@@ -2,6 +2,7 @@ import os
 import json
 import re
 import heapq
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 import torch
@@ -233,14 +234,6 @@ class BPETokenizer:
         if n < 2 or not self.merges:
             return ids
 
-        # Walk the sequence as a doubly linked list (nxt/prv over positions)
-        # so applying a merge is an O(1) splice instead of rebuilding the
-        # whole list, and use a min-heap keyed by merge rank instead of
-        # rescanning every remaining pair to find the next one to apply.
-        # merges[pair] == the id that pair produces, and ids were assigned
-        # in creation order, so "smallest id" is exactly "earliest merge" --
-        # same tie-breaking the original min_rank scan used, just found
-        # via a heap instead of a full linear scan each iteration.
         nxt = list(range(1, n)) + [-1]
         prv = [-1] + list(range(0, n - 1))
         alive = [True] * n
@@ -264,9 +257,6 @@ class BPETokenizer:
             j = nxt[i]
             if j == -1 or not alive[j]:
                 continue
-            # Re-check against the current pair at this position: earlier
-            # merges elsewhere may have changed what's adjacent to i since
-            # this heap entry was pushed, so a stale entry just gets skipped.
             if self.merges.get((ids[i], ids[j])) != rank:
                 continue
 
@@ -361,17 +351,9 @@ def train_bpe_tokenizers(train_cipher, train_plain, vocab_size=8000, cache_dir=C
     src_path = os.path.join(cache_dir, 'custom_bpe_tokenizer_src_v4.json')
     tgt_path = os.path.join(cache_dir, 'custom_bpe_tokenizer_tgt_v4.json')
 
-    # Cipher (binary 0/1 stream): no pre-tokenization, smaller vocab to avoid
-    # over-compression. With vocab_size=1000 on a 2-char alphabet, BPE creates
-    # tokens of ~5-10 bits, giving ~100-200 src tokens per 1024-bit chunk.
-    # This produces a much better src:tgt ratio for the Transformer.
     src_tokenizer = train_single_tokenizer(train_cipher, min(vocab_size, 1000), src_path, pre_tokenize_mode='none')
     
     # Plaintext (English): word-boundary pre-tokenization.
-    # We also cap this at 1000. In decipherment, large vocabs (8000) force the
-    # model to memorize bit-patterns for entire words, which fails on rare words.
-    # A vocab of 1000 forces smaller 2-3 character chunks, helping the model
-    # learn the actual compositional 8-bit to 1-char mapping rules.
     tgt_tokenizer = train_single_tokenizer(train_plain, min(vocab_size, 1000), tgt_path, pre_tokenize_mode='whitespace')
 
     return src_tokenizer, tgt_tokenizer
@@ -411,12 +393,42 @@ class CipherDatasetTokenized(Dataset):
         return torch.tensor(src_ids, dtype=torch.long), torch.tensor(tgt_ids, dtype=torch.long)
 
 
+class NgramEntropyEstimator:
+    def __init__(self, n=3):
+        self.n = n
+        self.counts = defaultdict(lambda: defaultdict(int))
+        self.totals = defaultdict(int)
+        
+    def fit(self, data_bytes_list):
+        for seq in data_bytes_list:
+            for i in range(len(seq) - self.n + 1):
+                ctx = tuple(seq[i:i+self.n-1])
+                target = seq[i+self.n-1]
+                self.counts[ctx][target] += 1
+                self.totals[ctx] += 1
+                
+    def get_entropy(self, seq, pos):
+        if pos < self.n - 1:
+            return 0.0 # Not enough context
+        ctx = tuple(seq[pos-self.n+1:pos])
+        if self.totals[ctx] == 0:
+            return 5.0 # High entropy for unknown context
+        
+        entropy = 0.0
+        for count in self.counts[ctx].values():
+            p = count / self.totals[ctx]
+            entropy -= p * math.log2(p)
+        return entropy
+
+
 class CipherDatasetTokenFree(Dataset):
 
-    def __init__(self, cipher_lines, plain_lines, max_byte_len=2048):
+    def __init__(self, cipher_lines, plain_lines, entropy_estimator, max_byte_len=2048, entropy_threshold=2.0):
         self.cipher_lines = cipher_lines
         self.plain_lines = plain_lines
         self.max_byte_len = max_byte_len
+        self.entropy_estimator = entropy_estimator
+        self.entropy_threshold = entropy_threshold
 
     def __len__(self):
         return len(self.cipher_lines)
@@ -425,18 +437,35 @@ class CipherDatasetTokenFree(Dataset):
         byte_vals = list(s.encode('utf-8'))[:max_len - 2]
         return torch.tensor([BYTE_BOS] + byte_vals + [BYTE_EOS], dtype=torch.long)
 
+    def _bin_str_to_bytes(self, bin_str, max_len):
+        # Convert binary string to actual bytes (0-255)
+        byte_vals = [int(bin_str[i:i+8], 2) for i in range(0, len(bin_str), 8)]
+        byte_vals = byte_vals[:max_len - 2]
+        return [BYTE_BOS] + byte_vals + [BYTE_EOS]
+
     def __getitem__(self, idx):
         cipher = self.cipher_lines[idx]
         plain = self.plain_lines[idx]
         
-        # BLT requires 9-byte patches (8 bits + '|' separator)
-        patched_cipher = ''
-        for j in range(0, len(cipher), 8):
-            patched_cipher += cipher[j:j + 8] + '|'
-            
-        src = self._str_to_bytes(patched_cipher, self.max_byte_len)
-        tgt = self._str_to_bytes(plain, self.max_byte_len)
-        return src, tgt
+        src_list = self._bin_str_to_bytes(cipher, self.max_byte_len)
+        tgt_tensor = self._str_to_bytes(plain, self.max_byte_len)
+        
+        boundaries = [False] * len(src_list)
+        boundaries[0] = True # BOS is always a boundary (start of first patch)
+        
+        # Calculate dynamic patches based on entropy
+        for i in range(1, len(src_list)):
+            entropy = self.entropy_estimator.get_entropy(src_list, i)
+            if entropy > self.entropy_threshold:
+                boundaries[i] = True
+                
+        # If the last item isn't EOS, and somehow we have a long sequence, EOS is a boundary
+        boundaries[-1] = True 
+                
+        src_tensor = torch.tensor(src_list, dtype=torch.long)
+        boundaries_tensor = torch.tensor(boundaries, dtype=torch.bool)
+        
+        return src_tensor, tgt_tensor, boundaries_tensor
 
 
 def collate_tokenized(batch, pad_id=0):
@@ -455,7 +484,25 @@ def collate_tokenized(batch, pad_id=0):
 
 
 def collate_token_free(batch):
-    return collate_tokenized(batch, pad_id=BYTE_PAD)
+    src_list = [item[0] for item in batch]
+    tgt_list = [item[1] for item in batch]
+    bounds_list = [item[2] for item in batch]
+    
+    src_max = max(s.size(0) for s in src_list)
+    tgt_max = max(t.size(0) for t in tgt_list)
+    
+    src_batch = torch.full((len(batch), src_max), BYTE_PAD, dtype=torch.long)
+    tgt_batch = torch.full((len(batch), tgt_max), BYTE_PAD, dtype=torch.long)
+    bounds_batch = torch.zeros((len(batch), src_max), dtype=torch.bool)
+    
+    for i in range(len(batch)):
+        s_len = src_list[i].size(0)
+        t_len = tgt_list[i].size(0)
+        src_batch[i, :s_len] = src_list[i]
+        tgt_batch[i, :t_len] = tgt_list[i]
+        bounds_batch[i, :s_len] = bounds_list[i]
+        
+    return src_batch, tgt_batch, bounds_batch
 
 
 def build_dataloaders(tokenization='subword', batch_size=64, max_seq_len=512,
@@ -487,10 +534,20 @@ def build_dataloaders(tokenization='subword', batch_size=64, max_seq_len=512,
 
     elif tokenization == 'blt':
         max_byte_len = max_seq_len
+        
+        # Train entropy estimator on training cipher bytes
+        entropy_estimator = NgramEntropyEstimator(n=3)
+        train_bytes_list = []
+        for cipher in splits['train']['cipher']:
+            byte_vals = [int(cipher[i:i+8], 2) for i in range(0, len(cipher), 8)]
+            train_bytes_list.append([BYTE_BOS] + byte_vals + [BYTE_EOS])
+        entropy_estimator.fit(train_bytes_list)
+        
         datasets = {}
         for split_name in ['train', 'val', 'test']:
             datasets[split_name] = CipherDatasetTokenFree(
-                splits[split_name]['cipher'], splits[split_name]['plain'], max_byte_len
+                splits[split_name]['cipher'], splits[split_name]['plain'], 
+                entropy_estimator=entropy_estimator, max_byte_len=max_byte_len
             )
         collate_fn = collate_token_free
         info = {

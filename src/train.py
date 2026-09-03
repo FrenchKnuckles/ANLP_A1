@@ -100,12 +100,18 @@ def decode_predictions(model, dataloader, data_info, device, is_blt=False, max_s
     eos_id = data_info['eos_idx']
 
     for batch in dataloader:
-        src, tgt = batch
+        if is_blt:
+            src, tgt, src_boundaries = batch
+            src_boundaries = src_boundaries.to(device)
+        else:
+            src, tgt = batch
+            src_boundaries = None
+
         src = src.to(device)
         tgt = tgt.to(device)
 
         if is_blt:
-            pred_ids = model.greedy_decode(src, max_len=PLAIN_CHUNK_SIZE + 16)
+            pred_ids = model.greedy_decode(src, src_boundaries=src_boundaries, max_len=PLAIN_CHUNK_SIZE + 16)
         else:
             pred_ids = model.greedy_decode(src, bos_idx=bos_id, eos_idx=eos_id, max_len=max_seq_len)
 
@@ -148,13 +154,20 @@ def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
-    for batch_idx, (src, tgt) in enumerate(train_loader):
+    for batch_idx, batch in enumerate(train_loader):
+        if is_blt:
+            src, tgt, src_boundaries = batch
+            src_boundaries = src_boundaries.to(device)
+        else:
+            src, tgt = batch
+            src_boundaries = None
+            
         src = src.to(device)
         tgt = tgt.to(device)
 
         tgt_input = tgt[:, :-1]
         tgt_labels = tgt[:, 1:]
-        logits = model(src, tgt_input)
+        logits = model(src, tgt_input, src_boundaries=src_boundaries)
 
         if logits.size(1) > tgt_labels.size(1):
             logits = logits[:, :tgt_labels.size(1), :]
@@ -204,13 +217,20 @@ def validate(model, val_loader, criterion, device, is_blt=False):
     total_loss = 0.0
     total_tokens = 0
 
-    for src, tgt in val_loader:
+    for batch in val_loader:
+        if is_blt:
+            src, tgt, src_boundaries = batch
+            src_boundaries = src_boundaries.to(device)
+        else:
+            src, tgt = batch
+            src_boundaries = None
+            
         src = src.to(device)
         tgt = tgt.to(device)
 
         tgt_input = tgt[:, :-1]
         tgt_labels = tgt[:, 1:]
-        logits = model(src, tgt_input)
+        logits = model(src, tgt_input, src_boundaries=src_boundaries)
 
         if logits.size(1) > tgt_labels.size(1):
             logits = logits[:, :tgt_labels.size(1), :]
@@ -444,94 +464,6 @@ def get_default_config():
     }
 
 
-def generate_readme(results):
-    print("\nGenerating README.md report...")
-    output_dir = os.path.join(PROJECT_ROOT, 'outputs')
-
-    if not results:
-        print("Warning: No metrics found. Run training first to generate README.")
-        return
-
-    readme_content = """# Cipher Transformer Ablation Study
-
-This repository contains a PyTorch implementation of a Seq2Seq Transformer trained to decrypt a substitution cipher. The study performs a controlled ablation over 5 architectural configurations to analyze their impact on training speed, memory, and task performance.
-
-## Architecture Configurations
-
-All models use the same base hyperparameters (`d_model=256`, `num_heads=8`, `layers=4`).
-
-*   **C1 (Base)**: Standard Transformer (BPE Tokenization, Sinusoidal PE, Multi-Head Attention, Pre-LN LayerNorm).
-*   **C2 (RoPE)**: Base + Rotary Positional Embeddings (RoPE).
-*   **C3 (GQA)**: Base + Grouped Query Attention (GQA with 2 KV heads).
-*   **C4 (RMSNorm)**: Base + RMSNorm.
-*   **C5 (BLT)**: Byte Latent Transformer (Token-free, patch size=9).
-
-### BLT Patch Size Rationale
-For C5, we set `patch_size=9`. Since the cipher is literally the 8-bit binary ASCII representation of each plaintext character followed by a `|` separator, a 9-byte patch perfectly aligns one patch with exactly one character. This is a sane inductive bias given the data's known periodicity, though the model still must learn the byte-to-character mapping and boundaries from scratch.
-
-## Results
-
-### Validation Loss
-![Learning Curves](outputs/loss_curves.png)
-
-### Performance Metrics
-
-| Configuration | Bit-Level Acc | Sequence Acc | Levenshtein (Norm) | BLEU | ROUGE-L |
-|---------------|---------------|--------------|--------------------|------|---------|
-"""
-
-    def fmt(val):
-        if isinstance(val, str):
-            return val
-        return f"{val:.4f}"
-
-    for run_name in ['C1', 'C2', 'C3', 'C4', 'C5']:
-        if run_name in results:
-            res = results[run_name]
-            readme_content += f"| {run_name} | {fmt(res.get('bit_accuracy', 0.0))} | {fmt(res.get('sequence_accuracy', 0.0))} | {fmt(res.get('levenshtein_normalized', 0.0))} | {fmt(res.get('bleu', 0.0))} | {fmt(res.get('rougeL', 0.0))} |\n"
-
-    readme_content += "\n### Naive Baselines\n*Evaluated on the raw test set prior to model evaluation to contextualize bit-level accuracy.*\n\n| Baseline | Bit-Level Acc | Sequence Acc | Levenshtein (Norm) |\n|----------|---------------|--------------|--------------------|\n"
-
-    if 'C1' in results and 'baselines' in results['C1']:
-        baselines = results['C1']['baselines']
-        if 'baseline_a' in baselines:
-            ba = baselines['baseline_a']
-            readme_content += f"| Most Frequent Byte | {fmt(ba.get('bit_accuracy', 0.0))} | {fmt(ba.get('sequence_accuracy', 0.0))} | {fmt(ba.get('levenshtein_normalized', 0.0))} |\n"
-        if 'baseline_b' in baselines:
-            bb = baselines['baseline_b']
-            readme_content += f"| Unigram Sample | {fmt(bb.get('bit_accuracy', 0.0))} | {fmt(bb.get('sequence_accuracy', 0.0))} | {fmt(bb.get('levenshtein_normalized', 0.0))} |\n"
-
-    readme_content += "\n### Resource Utilization\n\n| Configuration | Tokens/Sec | Bytes/Sec | Peak VRAM (MB) | Epoch Time (s) |\n|---------------|------------|-----------|----------------|----------------|\n"
-
-    for run_name in ['C1', 'C2', 'C3', 'C4', 'C5']:
-        if run_name in results:
-            speed = results[run_name].get('speed', {})
-            readme_content += f"| {run_name} | {speed.get('tokens_per_sec', 0.0):.1f} | {speed.get('bytes_per_sec', 0.0):.1f} | {speed.get('peak_memory_mb', 0.0):.1f} | {speed.get('wall_time_per_epoch', 0.0):.1f} |\n"
-
-    readme_content += """
-*Note: For C5 (BLT), the "Tokens/Sec" column counts raw bytes processed per second, whereas for C1-C4 it counts BPE tokens per second. Additionally, Peak GPU memory for C1 and C5 are now nearly identical due to the recent sequence-length and patch-size alignment, closing the previous ~1800MB gap.*
-
-## Instructions to Reproduce
-
-1. Setup environment and install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Run the main orchestration script (trains all 5 models sequentially):
-   ```bash
-   python -m src.train all
-   ```
-3. Or run a single configuration:
-   ```bash
-   python -m src.train c1
-   ```
-"""
-
-    with open(os.path.join(PROJECT_ROOT, 'README.md'), 'w', encoding='utf-8') as f:
-        f.write(readme_content)
-    print("README.md generated successfully.")
-
-
 def generate_final_reports():
     print("\nGenerating final comparison plots and README...")
     output_dir = os.path.join(PROJECT_ROOT, 'outputs')
@@ -557,7 +489,6 @@ def generate_final_reports():
         plot_metrics_comparison(results, output_dir)
         if 'C1' in results and 'C5' in results:
             plot_c5_vs_c1(results['C1'], results['C5'], results['C1'].get('speed', {}), results['C5'].get('speed', {}), output_dir)
-        generate_readme(results)
 
 
 def run_all_configs():

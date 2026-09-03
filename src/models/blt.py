@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .attention import MultiHeadAttention
 from .norm import LayerNorm
 from .positional import SinusoidalPositionalEncoding
@@ -21,7 +22,7 @@ class LocalEncoder(nn.Module):
         self.d_local = d_local
 
         self.byte_embedding = nn.Embedding(BYTE_VOCAB_SIZE, d_local, padding_idx=BYTE_PAD)
-        self.byte_pos_enc = SinusoidalPositionalEncoding(d_local, max_len=patch_size, dropout=dropout)
+        self.byte_pos_enc = SinusoidalPositionalEncoding(d_local, max_len=512, dropout=dropout)
 
         self.layers = nn.ModuleList([
             nn.ModuleDict({
@@ -37,53 +38,61 @@ class LocalEncoder(nn.Module):
 
         self.project = nn.Linear(d_local, d_model)
 
-    def forward(self, byte_ids):
+    def forward(self, byte_ids, boundaries=None):
         batch_size, seq_len = byte_ids.shape
+        device = byte_ids.device
 
-        # strip BOS so the cipher content aligns cleanly to 9-byte patches
-        bos_tok = byte_ids[:, :1]
-        content = byte_ids[:, 1:]
-        content_len = content.size(1)
+        if boundaries is None:
+            # Fallback for decoding: fixed patch size
+            boundaries = torch.zeros_like(byte_ids, dtype=torch.bool)
+            boundaries[:, ::self.patch_size] = True
+            boundaries[:, 0] = True 
 
-        # pad content to a multiple of patch_size
-        remainder = content_len % self.patch_size
-        if remainder != 0:
-            pad_len = self.patch_size - remainder
-            content = torch.nn.functional.pad(content, (0, pad_len), value=BYTE_PAD)
-            content_len = content.size(1)
+        patch_ids = boundaries.cumsum(dim=1) - 1  # 0-indexed patches
+        num_patches_per_seq = patch_ids[:, -1] + 1
+        max_patches = num_patches_per_seq.max().item()
 
-        num_patches = content_len // self.patch_size
-        patches = content.view(batch_size, num_patches, self.patch_size)
-        patch_pad_mask = (patches == BYTE_PAD).all(dim=-1)
+        # Local Attention Mask
+        same_patch_mask = patch_ids.unsqueeze(2) == patch_ids.unsqueeze(1) # [B, L, L]
+        pad_mask = byte_ids == BYTE_PAD
+        
+        attn_mask = (~same_patch_mask).float() * -1e9
+        attn_mask = attn_mask.unsqueeze(1) # [B, 1, L, L]
+        attn_mask = attn_mask.masked_fill(pad_mask.unsqueeze(1).unsqueeze(2), -1e9)
 
-        # flatten patches for parallel self-attention
-        patches_flat = patches.view(batch_size * num_patches, self.patch_size)
-        pad_mask = patches_flat == BYTE_PAD
-        attn_mask = pad_mask.unsqueeze(1).unsqueeze(2).float() * -1e9
+        x = self.byte_embedding(byte_ids)
+        
+        # Local Positional Encoding via cummax
+        indices = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
+        start_indices = torch.cummax(indices * boundaries.long(), dim=1)[0]
+        local_pos = indices - start_indices # [B, L]
+        
+        # apply positional encoding
+        pe = self.byte_pos_enc.pe.squeeze(0).to(device)
+        local_pos_clamped = torch.clamp(local_pos, max=pe.size(0)-1)
+        pos_emb = F.embedding(local_pos_clamped, pe)
+        x = self.byte_pos_enc.dropout(x + pos_emb)
 
-        x = self.byte_embedding(patches_flat)
-        x = self.byte_pos_enc(x)
-
-        # multi-layer pre-norm self attention within each patch
         for layer in self.layers:
             x_norm = layer['norm'](x)
             x = x + layer['dropout'](layer['attn'](x_norm, x_norm, x_norm, mask=attn_mask))
 
-        # cross-attention pooling: learnable query compresses each patch to one vector
-        query = self.pool_query.expand(batch_size * num_patches, -1, -1)
+        # Cross attention pooling
+        query = self.pool_query.expand(batch_size, max_patches, -1)
         x_norm = self.pool_norm(x)
-        pooled = self.pool_attn(query, x_norm, x_norm, mask=attn_mask)
-
-        patch_emb = self.project(pooled.squeeze(1))
-        patch_emb = patch_emb.view(batch_size, num_patches, self.d_model)
-
-        # embed BOS separately and prepend it
-        bos_emb = self.project(self.byte_embedding(bos_tok).squeeze(1)).unsqueeze(1)
-        patch_emb = torch.cat([bos_emb, patch_emb], dim=1)
-
-        bos_pad = torch.zeros(batch_size, 1, dtype=torch.bool, device=byte_ids.device)
-        patch_pad_mask = torch.cat([bos_pad, patch_pad_mask], dim=1)
-
+        
+        k_idx = torch.arange(max_patches, device=device).view(1, -1, 1) # [1, max_patches, 1]
+        cross_mask = patch_ids.unsqueeze(1) == k_idx # [B, max_patches, L]
+        cross_attn_mask = (~cross_mask).float() * -1e9
+        cross_attn_mask = cross_attn_mask.unsqueeze(1) # [B, 1, max_patches, L]
+        cross_attn_mask = cross_attn_mask.masked_fill(pad_mask.unsqueeze(1).unsqueeze(2), -1e9)
+        
+        pooled = self.pool_attn(query, x_norm, x_norm, mask=cross_attn_mask)
+        patch_emb = self.project(pooled.squeeze(1)) # [B, max_patches, d_model]
+        
+        patch_idx = torch.arange(max_patches, device=device).unsqueeze(0)
+        patch_pad_mask = patch_idx >= num_patches_per_seq.unsqueeze(1) # [B, max_patches]
+        
         return patch_emb, patch_pad_mask
 
 
@@ -136,8 +145,8 @@ class BLTSeq2SeqModel(nn.Module):
         mask = torch.triu(torch.ones(seq_len, seq_len, device=device), diagonal=1).bool()
         return mask.unsqueeze(0).unsqueeze(0).float() * -1e9
 
-    def encode(self, src_bytes):
-        patch_emb, patch_pad_mask = self.local_encoder(src_bytes)
+    def encode(self, src_bytes, src_boundaries=None):
+        patch_emb, patch_pad_mask = self.local_encoder(src_bytes, src_boundaries)
         patch_emb = self.patch_pos_enc(patch_emb)
 
         src_mask = self._make_pad_mask(patch_pad_mask)
@@ -165,17 +174,17 @@ class BLTSeq2SeqModel(nn.Module):
 
         return self.decoder_norm(x)
 
-    def forward(self, src_bytes, tgt_bytes):
-        enc_output, src_pad_mask = self.encode(src_bytes)
+    def forward(self, src_bytes, tgt_bytes, src_boundaries=None):
+        enc_output, src_pad_mask = self.encode(src_bytes, src_boundaries)
         dec_output = self.decode(tgt_bytes, enc_output, src_pad_mask)
         return self.output_projection(dec_output)
 
     @torch.no_grad()
-    def greedy_decode(self, src_bytes, max_len=512):
+    def greedy_decode(self, src_bytes, src_boundaries=None, max_len=512):
         batch_size = src_bytes.size(0)
         device = src_bytes.device
 
-        enc_output, src_pad_mask = self.encode(src_bytes)
+        enc_output, src_pad_mask = self.encode(src_bytes, src_boundaries)
         ys = torch.full((batch_size, 1), BYTE_BOS, dtype=torch.long, device=device)
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
